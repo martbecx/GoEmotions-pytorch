@@ -29,7 +29,7 @@ for text in texts:
     outputs = model(**inputs)  # Get model outputs
     logits = outputs.logits  # Get the logits (raw scores)
     logits = 1 / (1 + torch.exp(-logits.detach()))
-
+    print(logits.size())
     # Decode the predictions
     values, indices = torch.sort(logits, descending=True, dim=1, out=None)
     print(text)
