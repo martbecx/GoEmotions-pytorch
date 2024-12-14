@@ -121,7 +121,7 @@ def get_user_feedback(predictions):
                 split_position = int(input("Enter the position to split between positive and negative (1-4): "))
                 if 1 <= split_position <= 4:
                     break
-                print("Please enter a number between 1 and 4.")
+                print("Please enter a number between 1 and 4. This will be the position to split between positive and negative where e.g. 1 would result in the first emotion being positive and the rest being negative.")
             except ValueError:
                 print("Please enter a valid number.")
 
@@ -142,9 +142,6 @@ def get_user_feedback(predictions):
             "chosen": positive_results,
             "rejected": negative_results,
         })
-
-        print(f"Positive Results: {positive_results}")
-        print(f"Negative Results: {negative_results}\n")
 
     print(f"Feedback Data: {feedback_data}")
     return feedback_data
@@ -181,6 +178,7 @@ def prepare_dpo_dataset(feedback_data, tokenizer):
 
     # Convert to HuggingFace Dataset
     # Let DPOTrainer handle the tokenization
+    print(f"dataset: {dataset}")
     return Dataset.from_dict(dataset)
 
 # Fine-tune with DPOTrainer
@@ -243,16 +241,8 @@ def fine_tune_with_dpo(feedback_dataset, model, tokenizer, output_dir="dpo-finet
         logging_dir=f"{output_dir}/logs",
     )
 
-    # Initialize DPOTrainer
-    trainer = DPOTrainer(
-        model=model,
-        ref_model=None,  # Use same model as reference
-        args=dpo_config,
-        beta=0.1,
-        train_dataset=feedback_dataset,
-        tokenizer=tokenizer,
-        data_collator=custom_data_collator,
-    )
+    training_args = DPOConfig(output_dir=output_dir, logging_steps=10)
+    trainer = DPOTrainer(model=model, args=dpo_config, processing_class=tokenizer, train_dataset=feedback_dataset)
 
     # Train the model
     trainer.train()
