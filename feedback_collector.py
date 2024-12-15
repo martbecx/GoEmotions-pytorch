@@ -2,6 +2,7 @@ import torch
 from transformers import BertTokenizer, BertForSequenceClassification
 from torch.nn.functional import sigmoid
 import csv
+import random
 
 class_labels = [
     "admiration", "amusement", "anger", "annoyance", "approval", 
@@ -24,9 +25,9 @@ def load_examples(file_path, num_examples=10):
     data = []
     with open(file_path, 'r', encoding='utf-8') as file:
         reader = csv.reader(file, delimiter='\t')
-        for i, row in enumerate(reader):
-            if i >= num_examples:
-                break
+        rows = list(reader)
+        for i in range(num_examples):
+            row = random.choice(rows)
             examples.append(row[0])
             data.append(tuple(row[1:]))
     return examples, data
