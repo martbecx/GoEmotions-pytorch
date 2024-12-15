@@ -152,6 +152,8 @@ def train(args,
             for i in range(len(thresh_index)):
                 if thresh_index[i] == 0:
                     thresh_goal[i] = sorted_preds[i, 0]
+                elif thresh_index[i] == 4:
+                    thresh_goal[i] = sorted_preds[i, 3]
                 else:
                     thresh_goal[i] = (sorted_preds[i, thresh_index[i] - 1] + sorted_preds[i, thresh_index[i]])/2
 
