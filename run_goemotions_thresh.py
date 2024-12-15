@@ -71,6 +71,12 @@ class DynamicThresholdModel(nn.Module):
             token_type_ids=token_type_ids
         )
         return base_outputs.logits
+    
+    def save_pretrained(self, output_dir):
+        torch.save(self.threshold_layer.state_dict(), os.path.join(output_dir, "threshold_layer.pt"))
+
+    def from_pretrained(self, output_dir):
+        self.threshold_layer.load_state_dict(torch.load(os.path.join(output_dir, "threshold_layer.pt")))
 
 logger = logging.getLogger(__name__)
 
@@ -233,19 +239,38 @@ def evaluate(args, model, eval_dataset, mode, global_step=None):
                 "input_ids": batch[0],
                 "attention_mask": batch[1],
                 "token_type_ids": batch[2],
-                "labels": batch[3]
+                "labels": batch[3],
+                "thresh": batch[4]
             }
-            outputs = model(**inputs)
-            tmp_eval_loss, logits = outputs[:2]
-
-            eval_loss += tmp_eval_loss.mean().item()
+            outputs, predicted_thresh = model(**inputs)
+            
+            logits = outputs[0]
+            
         nb_eval_steps += 1
         if preds is None:
             preds = 1 / (1 + np.exp(-logits.detach().cpu().numpy()))  # Sigmoid
             out_label_ids = inputs["labels"].detach().cpu().numpy()
+            sorted_preds = np.sort(preds, axis=1)
+            sorted_indices = np.argsort(preds, axis=1)
         else:
             preds = np.append(preds, 1 / (1 + np.exp(-logits.detach().cpu().numpy())), axis=0)  # Sigmoid
             out_label_ids = np.append(out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
+            sorted_preds = np.sort(preds[-1], axis=1)
+            sorted_indices = np.argsort(preds[-1], axis=1)
+
+        thresh_index = inputs["thresh"].detach().cpu().numpy().astype(int)
+        thresh_goal = np.zeros((len(thresh_index)))
+        
+        for i in range(len(thresh_index)):
+            if thresh_index[i] == 0:
+                thresh_goal[i] = sorted_preds[i, 0]
+            elif thresh_index[i] == 4:
+                thresh_goal[i] = sorted_preds[i, 3]
+            else:
+                thresh_goal[i] = (sorted_preds[i, thresh_index[i] - 1] + sorted_preds[i, thresh_index[i]])/2
+
+        tmp_eval_loss = F.mse_loss(predicted_thresh, torch.Tensor(thresh_goal).to(args.device))
+        eval_loss += tmp_eval_loss.mean().item()
 
     eval_loss = eval_loss / nb_eval_steps
     results = {
@@ -321,8 +346,9 @@ def main(cli_args):
     results = {}
     if args.do_eval:
         checkpoints = list(
-            os.path.dirname(c) for c in sorted(glob.glob(args.output_dir + "/**/" + "pytorch_model.bin", recursive=True))
+            os.path.dirname(c) for c in sorted(glob.glob(args.output_dir + "/**/" + "threshold_layer.pt", recursive=True))
         )
+        print(checkpoints)
         if not args.eval_all_checkpoints:
             checkpoints = checkpoints[-1:]
         else:
@@ -331,7 +357,7 @@ def main(cli_args):
         logger.info("Evaluate the following checkpoints: %s", checkpoints)
         for checkpoint in checkpoints:
             global_step = checkpoint.split("-")[-1]
-            model = BertForMultiLabelClassification.from_pretrained(checkpoint)
+            model.from_pretrained(output_dir=checkpoint)
             model.to(args.device)
             result = evaluate(args, model, test_dataset, mode="test", global_step=global_step)
             result = dict((k + "_{}".format(global_step), v) for k, v in result.items())

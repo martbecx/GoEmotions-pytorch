@@ -99,7 +99,7 @@ def write_feedback_to_tsv(feedback_data, metadata, output_file):
 # Main function
 def main():
     dev_file = "data/original/dev.tsv"
-    output_file = "data/thresh/feedback_results.tsv"
+    output_file = "data/thresh/train.tsv"
     num_iterations = 10
 
     examples, data = load_examples(dev_file, num_iterations)
