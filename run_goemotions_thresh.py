@@ -219,7 +219,7 @@ def evaluate(args, model, eval_dataset, mode, global_step=None):
     eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size)
 
     # Eval!
-    if global_step != None:
+    if global_step is not None:
         logger.info("***** Running evaluation on {} dataset ({} step) *****".format(mode, global_step))
     else:
         logger.info("***** Running evaluation on {} dataset *****".format(mode))
@@ -227,8 +227,9 @@ def evaluate(args, model, eval_dataset, mode, global_step=None):
     logger.info("  Eval Batch size = {}".format(args.eval_batch_size))
     eval_loss = 0.0
     nb_eval_steps = 0
-    preds = None
-    out_label_ids = None
+    preds = []
+    out_label_ids = []
+    thresholds = []  # List to accumulate predicted thresholds
 
     for batch in tqdm(eval_dataloader, desc="Evaluating"):
         model.eval()
@@ -240,52 +241,52 @@ def evaluate(args, model, eval_dataset, mode, global_step=None):
                 "attention_mask": batch[1],
                 "token_type_ids": batch[2],
                 "labels": batch[3],
-                "thresh": batch[4]
             }
             outputs, predicted_thresh = model(**inputs)
             
             logits = outputs[0]
             
         nb_eval_steps += 1
-        if preds is None:
-            preds = 1 / (1 + np.exp(-logits.detach().cpu().numpy()))  # Sigmoid
-            out_label_ids = inputs["labels"].detach().cpu().numpy()
-            sorted_preds = np.sort(preds, axis=1)
-            sorted_indices = np.argsort(preds, axis=1)
-        else:
-            preds = np.append(preds, 1 / (1 + np.exp(-logits.detach().cpu().numpy())), axis=0)  # Sigmoid
-            out_label_ids = np.append(out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
-            sorted_preds = np.sort(preds[-1], axis=1)
-            sorted_indices = np.argsort(preds[-1], axis=1)
 
-        thresh_index = inputs["thresh"].detach().cpu().numpy().astype(int)
-        thresh_goal = np.zeros((len(thresh_index)))
-        
-        for i in range(len(thresh_index)):
-            if thresh_index[i] == 0:
-                thresh_goal[i] = sorted_preds[i, 0]
-            elif thresh_index[i] == 4:
-                thresh_goal[i] = sorted_preds[i, 3]
-            else:
-                thresh_goal[i] = (sorted_preds[i, thresh_index[i] - 1] + sorted_preds[i, thresh_index[i]])/2
+        # Handle predictions
+        batch_preds = 1 / (1 + np.exp(-logits.detach().cpu().numpy()))  # Sigmoid, shape: [batch_size, num_emotions]
+        preds.append(batch_preds)
 
-        tmp_eval_loss = F.mse_loss(predicted_thresh, torch.Tensor(thresh_goal).to(args.device))
-        eval_loss += tmp_eval_loss.mean().item()
+        # Handle labels
+        out_label_ids.append(inputs["labels"].detach().cpu().numpy())
+
+        # Handle predicted thresholds
+        batch_thresh = predicted_thresh.detach().cpu().numpy()  # Shape: [batch_size, 1]
+        thresholds.append(batch_thresh)
+
+    # Concatenate all predictions and labels
+    preds = np.concatenate(preds, axis=0)  # Shape: [total_samples, num_emotions]
+    out_label_ids = np.concatenate(out_label_ids, axis=0)  # Shape: [total_samples, num_emotions]
+    thresholds = np.concatenate(thresholds, axis=0)  # Shape: [total_samples, 1]
 
     eval_loss = eval_loss / nb_eval_steps
     results = {
         "loss": eval_loss
     }
-    preds[preds > args.threshold] = 1
-    preds[preds <= args.threshold] = 0
-    result = compute_metrics(out_label_ids, preds)
+
+    # Apply dynamic thresholds
+    # Broadcast thresholds to match preds shape
+    thresholds_broadcasted = thresholds  # Shape: [total_samples, 1]
+    binary_preds = (preds > thresholds_broadcasted).astype(int)  # Shape: [total_samples, num_emotions]
+
+    # Compute metrics
+    result = compute_metrics(out_label_ids, binary_preds)
     results.update(result)
 
+    # Save evaluation results
     output_dir = os.path.join(args.output_dir, mode)
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    output_eval_file = os.path.join(output_dir, "{}-{}.txt".format(mode, global_step) if global_step else "{}.txt".format(mode))
+    output_eval_file = os.path.join(
+        output_dir,
+        "{}-{}.txt".format(mode, global_step) if global_step else "{}.txt".format(mode)
+    )
     with open(output_eval_file, "w") as f_w:
         logger.info("***** Eval results on {} dataset *****".format(mode))
         for key in sorted(results.keys()):
@@ -293,6 +294,22 @@ def evaluate(args, model, eval_dataset, mode, global_step=None):
             f_w.write("  {} = {}\n".format(key, str(results[key])))
 
     return results
+
+
+def get_latest_checkpoint(checkpoint_dir):
+    """
+    Returns the path to the latest checkpoint in the given directory.
+    """
+    checkpoints = glob.glob(os.path.join(checkpoint_dir, 'checkpoint-*'))
+    print("checkpoints: ", checkpoints)
+    if not checkpoints:
+        raise ValueError(f"No checkpoints found in {checkpoint_dir}")
+    # Sort checkpoints based on the step number
+    checkpoints.sort(key=lambda x: int(x.split('-')[-1]))
+    latest_checkpoint = checkpoints[-1]
+    print("checkpoints: ", checkpoints)
+    print("latest_checkpoint: ", latest_checkpoint)
+    return latest_checkpoint
 
 
 def main(cli_args):
@@ -311,7 +328,7 @@ def main(cli_args):
     label_list = processor.get_labels()
 
     config = BertConfig.from_pretrained(
-        args.model_name_or_path,
+        args.model_name_or_path,  # This can remain as is or be adjusted based on your needs
         num_labels=len(label_list),
         finetuning_task=args.task,
         id2label={str(i): label for i, label in enumerate(label_list)},
@@ -320,11 +337,19 @@ def main(cli_args):
     tokenizer = BertTokenizer.from_pretrained(
         args.tokenizer_name_or_path,
     )
+
+    # Identify the latest checkpoint in ckpt_dir_original
+    original_checkpoint_dir = args.ckpt_dir_original
+    latest_checkpoint = get_latest_checkpoint(original_checkpoint_dir)
+    logger.info(f"Loading pretrained model from checkpoint: {latest_checkpoint}")
+
+    # Load the pretrained BertForMultiLabelClassification model from the latest checkpoint
     bert_model = BertForMultiLabelClassification.from_pretrained(
-        args.model_name_or_path,
+        latest_checkpoint,
         config=config
     )
 
+    # Wrap with DynamicThresholdModel
     model = DynamicThresholdModel(bert_model)
 
     # GPU or CPU
@@ -348,7 +373,6 @@ def main(cli_args):
         checkpoints = list(
             os.path.dirname(c) for c in sorted(glob.glob(args.output_dir + "/**/" + "threshold_layer.pt", recursive=True))
         )
-        print(checkpoints)
         if not args.eval_all_checkpoints:
             checkpoints = checkpoints[-1:]
         else:

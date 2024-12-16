@@ -79,7 +79,10 @@ def convert_examples_to_features(
     features = []
     for i in range(len(examples)):
         inputs = {k: batch_encoding[k][i] for k in batch_encoding}
-        thresh = float(examples[i].thresh)
+        try:
+            thresh = float(examples[i].thresh)
+        except:
+            thresh = 0.0
 
         feature = InputFeatures(**inputs, label=labels[i], thresh=thresh)
         features.append(feature)

@@ -43,5 +43,5 @@ class BertForMultiLabelClassification(BertPreTrainedModel):
         if labels is not None:
             loss = self.loss_fct(logits, labels)
             outputs = (loss,) + outputs
-
-        return outputs, last_hidden_state # (loss), logits, (hidden_states), (attentions)
+        
+        return outputs, last_hidden_state # (loss), logits, (hidden_states), (attentions) 
